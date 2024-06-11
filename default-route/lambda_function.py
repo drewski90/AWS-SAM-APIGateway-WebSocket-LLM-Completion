@@ -49,7 +49,6 @@ def lambda_handler(event, context):
   
   # Iterate over response content as it streams in
   for line in response.iter_lines():
-    print(line)
     # if the line starts with data try to parse it as json
     data = parse_line(line)
     if data:
