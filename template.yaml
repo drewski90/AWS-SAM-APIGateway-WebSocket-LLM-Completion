@@ -1,0 +1,211 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: Websocket to support chat with OpenAPI compatible RestAPI's
+
+Globals:
+  Function:
+    Runtime: python3.10
+    Timeout: 600
+    Handler: index.handler
+    Environment:
+      Variables:
+        OPENAI_BASE_URL: !Ref OpenAIBaseUrl
+        OPENAI_MODEL_ID: !Ref OpenAIModel
+        OPENAI_API_KEY: !Ref OpenAIAPIKey
+        WEBSOCKET_ID: !GetAtt WebsocketAPI.ApiId
+
+Parameters:
+  OpenAIAPIKey:
+    Type: String
+    Description: "Your OpenAI API key"
+  OpenAIModel:
+    Type: String
+    Description: Model Id
+    Default: gpt-4-turbo
+  OpenAIBaseUrl:
+    Type: String
+    Default: https://api.openai.com/v1
+    Description: "Doesnt need to be openai, just a openai compatible endpoint ie: vLLM"
+
+Resources:
+
+  # Socket API
+  WebsocketAPI:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: chat
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: "$request.body.action"
+
+  # Socket API Stage
+  Deployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    DependsOn:
+    - ConnectRoute
+    - DisconnectRoute
+    Properties:
+      ApiId: !Ref WebsocketAPI
+
+  ProductionStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      StageName: production
+      Description: Production Stage
+      DeploymentId: !Ref Deployment
+      ApiId: !Ref WebsocketAPI
+
+  # Layers
+
+  RequestsLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      ContentUri: dependencies/requests
+      CompatibleRuntimes:
+        - python3.10
+    Metadata:
+      BuildMethod: python3.10
+
+  # CONNECTION ROUTE
+  WebsocketAPILambdaConnectPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ConnectHandlerFunction
+      Principal: apigateway.amazonaws.com
+  
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebsocketAPI
+      RouteKey: $connect
+      AuthorizationType: NONE
+      OperationName: ConnectRoute
+      Target: !Join
+        - '/'
+        - - integrations
+          - !Ref ConnectRouteIntegration
+
+  ConnectRouteIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    DependsOn: ['ConnectHandlerFunction']
+    Properties:
+      ApiId: !Ref WebsocketAPI
+      Description: Connect Integration
+      IntegrationType: AWS_PROXY
+      IntegrationUri: 
+        Fn::Sub:
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ConnectHandlerFunction.Arn}/invocations
+
+  ConnectHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Handles new connection
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.10
+      CodeUri: connect-route/
+      MemorySize: 128
+      Timeout: 3
+      Policies:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      RuntimeManagementConfig:
+        UpdateRuntimeOn: Auto
+
+  # DISCONNECT ROUTE
+  WebsocketAPILambdaDisconnectPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref DisconnectHandlerFunction
+      Principal: apigateway.amazonaws.com
+
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebsocketAPI
+      RouteKey: $disconnect
+      AuthorizationType: NONE
+      OperationName: DisconnectRoute
+      Target: !Join
+        - '/'
+        - - integrations
+          - !Ref DisconnectRouteIntegration
+
+  DisconnectRouteIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    DependsOn: ['DisconnectHandlerFunction']
+    Properties:
+      ApiId: !Ref WebsocketAPI
+      Description: Disconnect Integration
+      IntegrationType: AWS_PROXY
+      IntegrationUri: 
+        Fn::Sub:
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DisconnectHandlerFunction.Arn}/invocations
+  
+  DisconnectHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Handles disconnect
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.10
+      CodeUri: disconnect-route/
+      MemorySize: 128
+      Timeout: 3
+      Policies:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      RuntimeManagementConfig:
+        UpdateRuntimeOn: Auto
+  
+  # DEFAULT ROUTE - for completions
+  WebsocketAPILambdaDefaultPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref DefaultHandlerFunction
+      Principal: apigateway.amazonaws.com
+  
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebsocketAPI
+      RouteKey: $default
+      AuthorizationType: NONE
+      OperationName: DefaultRoute
+      Target: !Join
+        - '/'
+        - - integrations
+          - !Ref DefaultRouteIntegration
+  
+  DefaultRouteIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    DependsOn: ['DefaultHandlerFunction']
+    Properties:
+      ApiId: !Ref WebsocketAPI
+      Description: Default Route Integration
+      IntegrationType: AWS_PROXY
+      IntegrationUri: 
+        Fn::Sub:
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DefaultHandlerFunction.Arn}/invocations
+  
+  DefaultHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: OpenAPI request
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.10
+      CodeUri: default-route/
+      MemorySize: 128
+      Timeout: 120
+      Policies:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      - arn:aws:iam::aws:policy/AmazonAPIGatewayInvokeFullAccess
+      RuntimeManagementConfig:
+        UpdateRuntimeOn: Auto
+      Layers:
+      - !Ref RequestsLayer
+
+Outputs:
+  WebSocketApiId:
+    Value: !Ref WebsocketAPI
+  WebSocketEndpoint:
+    Value: !Sub "${WebsocketAPI.ApiEndpoint}/${ProductionStage}"
+

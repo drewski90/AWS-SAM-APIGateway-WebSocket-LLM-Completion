@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenAI WebSocket Test</title>
+    <link href="https://cdn.jsdelivr.net/npm/vuetify@2.6.0/dist/vuetify.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/vue@2.6.14/dist/vue.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vuetify@2.6.0/dist/vuetify.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/uuid@8.3.2/dist/umd/uuid.min.js"></script>
+</head>
+<body>
+    <div id="app">
+        <v-app>
+            <v-container>
+                <v-row>
+                    <v-col>
+                        <h1>OpenAI WebSocket Test</h1>
+                        <v-form @submit.prevent="connectWebSocket">
+                            <v-text-field
+                                label="WebSocket URL"
+                                v-model="wsUrl"
+                                required
+                            ></v-text-field>
+                            <v-btn type="submit" color="primary">Connect</v-btn>
+                        </v-form>
+                        <v-form @submit.prevent="sendMessage">
+                            <v-text-field
+                                label="Message"
+                                v-model="prompt"
+                            ></v-text-field>
+                            <v-btn type="submit" color="primary" :disabled="!isConnected">Send</v-btn>
+                        </v-form>
+                        <h2>Messages:</h2>
+                        <v-card>
+                            <v-card-text>
+                              {{receivedMessages}}
+                            </v-card-text>
+                            <v-card-text>
+                                <pre>{{ messages }}</pre>
+                            </v-card-text>
+                        </v-card>
+                        <v-alert v-if="doneReceived" type="success">
+                            [DONE] received!
+                        </v-alert>
+                    </v-col>
+                </v-row>
+            </v-container>
+        </v-app>
+    </div>
+
+    <script>
+        new Vue({
+            el: '#app',
+            vuetify: new Vuetify(),
+            data: () => ({
+                messages: [],
+                prompt: '',
+                wsUrl: localStorage.getItem('ws-url'),
+                receivedMessages: '',
+                isConnected: false,
+                doneReceived: false,
+                socket: null,
+            }),
+            watch: {
+              wsUrl(v) {
+                localStorage.setItem('ws-url', v);
+              }
+            },
+            methods: {
+                connectWebSocket() {
+                    if (this.socket) {
+                        this.socket.close();
+                    }
+                    this.socket = new WebSocket(this.wsUrl);
+
+                    this.socket.onopen = () => {
+                        this.isConnected = true;
+                        this.receivedMessages += 'Connected to ' + this.wsUrl + '\n';
+                    };
+
+                    this.socket.onmessage = (event) => {
+                        const message = JSON.parse(event.data);
+                        const { id, data } = message;
+                        let target = this.messages.find(i => i.id === id);
+                        if (!target) {
+                          target = {id, data: data.choices[0].delta};
+                          this.messages = [...this.messages, target];
+                        }
+                        const contentDelta = data?.choices?.[0]?.delta?.content;
+                        if (contentDelta) {
+                          target.data.content += contentDelta;
+                        }
+                    };
+
+                    this.socket.onclose = () => {
+                        this.isConnected = false;
+                        this.receivedMessages += 'Disconnected from ' + this.wsUrl + '\n';
+                    };
+
+                    this.socket.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                        this.receivedMessages += 'Error: ' + error.message + '\n';
+                    };
+                },
+                sendMessage() {
+                    if (this.socket && this.isConnected && this.prompt.length > 0) {
+                        const userMsg = {
+                          data: {
+                            role: 'user',
+                            content: this.prompt
+                          },
+                          created: new Date().toISOString()
+                        };
+                        this.messages = [...this.messages, userMsg];
+                        const request = {
+                          id: uuid.v4(),
+                          action: '$default',
+                          payload: {
+                            messages: this.messages.map(i => i.data)
+                          }
+                        };
+                        this.socket.send(JSON.stringify(request));
+                        this.prompt = '';
+                    }
+                }
+            }
+        });
+    </script>
+</body>
+</html>
